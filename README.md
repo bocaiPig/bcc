@@ -1,2 +1,3 @@
-# bcc
-A mini Compiler.
+#chibicc
+
+#bocaicc
