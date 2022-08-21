@@ -19,6 +19,7 @@ assert() {
 
 assert 0 0
 assert 41 41
+assert 56 '12+55-11'
 
 #if success to pass, print OK!
 echo OK!
