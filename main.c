@@ -5,6 +5,12 @@
 #include <string.h>
 #include <stdbool.h>
 #include <assert.h>
+
+/******************
+* lexical analysis
+* terminal sympol analysis
+******************/
+
 // set enum type for every terminal symbol
 typedef enum {
   TK_PUNCT, // operator such as '+' '-'
@@ -97,6 +103,20 @@ static Token *newToken(TokenKind Kind, char *Start, char *End) {
   return Tok;
 }
 
+static bool startsWith(char *Str, char *SubStr) {
+  // compare LHS and RHS, the N th char whether equal
+  return strncmp(Str, SubStr, strlen(SubStr)) == 0;
+}
+
+// read punct
+static int readPunct(char *Ptr) {
+  // judge 2 bit operator
+  if(startsWith(Ptr, "==") || startsWith(Ptr, "!=") || startsWith(Ptr, "<=") ||startsWith(Ptr, ">="))
+    return 2;
+  // judge 1 bit operator
+  return ispunct(*Ptr) ? 1 : 0;
+}
+
 // analysis token
 static Token *tokenize() {
   char *P = CurrentInput;
@@ -121,10 +141,11 @@ static Token *tokenize() {
     }
 
     // analysis operator
-    if(ispunct(*P)) {
-      Cur->Next = newToken(TK_PUNCT, P, P + 1);
+    int PunctLen = readPunct(P);
+    if(PunctLen) {
+      Cur->Next = newToken(TK_PUNCT, P, P + PunctLen);
       Cur = Cur->Next;
-      ++P;
+      P = P + PunctLen;
       continue;
     }
 
@@ -145,7 +166,12 @@ typedef enum {
   ND_SUB, // -
   ND_MUL, // *
   ND_DIV, // /
+  ND_NEG, // minus sign
   ND_NUM, // number
+  ND_EQ,  // ==
+  ND_NE,  // !=
+  ND_LT,  // <
+  ND_LE,  // <=
 } NodeKind;
 
 // AST binary tree
@@ -157,10 +183,18 @@ struct Node {
   int Val;       // store ND_NUM's value
 };
 
+
 // start a new node
 struct Node *newNode(NodeKind Kind) {
   Node *Nd = calloc(1, sizeof(Node));
   Nd->Kind = Kind;
+  return Nd;
+}
+
+// statt a new signal tree node
+static Node *newUnary(NodeKind Kind, Node *Expr) {
+  Node *Nd = newNode(Kind);
+  Nd->LHS = Expr;
   return Nd;
 }
 
@@ -179,17 +213,84 @@ static Node *newNum(int Val) {
   return Nd;
 }
 
-// expr = mul("+" mul | "-" mul)*
-// mul = primary ("*" primary | "/" primary)*
-// primary = "(" expr ")" | num
+// expr = equality
+// equality = relational ("==" relational | "!=" relational)*
+// relational = add ("<" add | "<=" add | ">" add | ">=" add)*
+// add = mul ("+" mul | "-" mul)*
+// mul = unary ("+" unary | "/" unary)*
+// unary = ("+" | "-") unary | primary
+// primary = ("(" expr ")" | num
 static Node *expr(Token **Rest, Token *Tok);
+static Node *equality(Token **Rest, Token *Tok);
+static Node *relational(Token **Rest, Token *Tok);
+static Node *add(Token **Rest, Token *Tok);
+static Node *unary(Token **Rest, Token *Tok);
 static Node *mul(Token **Rest, Token *Tok);
 static Node *primary(Token **Rest, Token *Tok);
 
-// analysis + & -
-// expr = mul("+" mul | "-" mul)
+// analysis expression
+// expr = equality
 static Node *expr(Token **Rest, Token *Tok) {
-  // mul
+  return equality(Rest, Tok);
+}
+
+// analysis relational
+// equality = relational ("==" relational | "!=" relational)*
+static Node *equality(Token **Rest, Token *Tok) {
+  // relational
+  Node *Nd = relational(&Tok, Tok);
+
+  // ("==" relational | "!=" relational)*
+  while(true) {
+    // "==" relational
+    if (equal(Tok, "==")) {
+      Nd = newBinary(ND_EQ, Nd, relational(&Tok, Tok->Next));
+      continue;
+    }
+
+    // "!=" relational
+    if(equal(Tok, "!=")) {
+      Nd = newBinary(ND_NE, Nd, relational(&Tok, Tok->Next));
+      continue;
+    }
+
+    *Rest = Tok;
+    return Nd;
+  }
+}
+
+// analysis compare relationship
+// ralational = add ("<" add | "<=" add | ">" add | ">=" add)*
+static Node *relational(Token **Rest, Token *Tok){
+  // add
+  Node *Nd = add(&Tok, Tok);
+
+  while(true) {
+    // "<"
+    if(equal(Tok, "<")) {
+      Nd = newBinary(ND_LT, Nd, add(&Tok, Tok->Next));
+      continue;
+    }
+    if(equal(Tok, "<=")) {
+      Nd= newBinary(ND_LE, Nd, add(&Tok, Tok->Next));
+      continue;
+    }
+    if(equal(Tok, ">")) {
+      Nd = newBinary(ND_LT, add(&Tok, Tok->Next), Nd);
+      continue;
+    }
+    if(equal(Tok, ">=")) {
+      Nd = newBinary(ND_LE, add(&Tok, Tok->Next), Nd);
+      continue;
+    }
+    *Rest = Tok;
+    return Nd;
+  }
+}
+
+// analysis add & subtract
+// add = mul ("+" mul | "-" mul)*
+static Node *add(Token **Rest, Token *Tok) {
   Node *Nd = mul(&Tok, Tok);
 
   while(true) {
@@ -207,18 +308,18 @@ static Node *expr(Token **Rest, Token *Tok) {
   }
 }
 
-// analysis * & /
+// analysis mul & div
+// mul = unary ("*" unary | "/" unary)*
 static Node *mul(Token **Rest, Token *Tok) {
-  // primary
-  Node *Nd = primary(&Tok, Tok);
+  Node *Nd = unary(&Tok, Tok);
 
   while(true) {
     if(equal(Tok, "*")) {
-      Nd = newBinary(ND_MUL, Nd, primary(&Tok, Tok->Next));
+      Nd = newBinary(ND_MUL, Nd, unary(&Tok, Tok->Next));
       continue;
     }
-    if(equal(Tok, "/")){
-      Nd = newBinary(ND_DIV, Nd, primary(&Tok, Tok->Next));
+    if(equal(Tok, "/")) {
+      Nd = newBinary(ND_DIV, Nd, unary(&Tok, Tok->Next));
       continue;
     }
 
@@ -227,6 +328,21 @@ static Node *mul(Token **Rest, Token *Tok) {
   }
 }
 
+// analysis unary
+// unary = ("+" | "-") unary | primary
+static Node *unary(Token **Rest, Token *Tok) {
+  if(equal(Tok, "+")){
+    return unary(Rest, Tok->Next);
+  }
+  if(equal(Tok, "-")) {
+    return newUnary(ND_NEG, unary(Rest, Tok->Next));
+  }
+
+  return primary(Rest, Tok);
+}
+
+// analysis brackets & num
+// primary = "(" expr ")" | num
 static Node *primary(Token **Rest, Token *Tok) {
   if(equal(Tok, "(")) {
     Node *Nd = expr(&Tok, Tok->Next);
@@ -239,7 +355,7 @@ static Node *primary(Token **Rest, Token *Tok) {
     return Nd;
   }
 
-  errorTok(Tok, "expected an expression");
+  errorTok(Tok, "expected an expression!");
   return NULL;
 }
 
@@ -268,10 +384,20 @@ static void pop(char *Reg) {
 
 // generate expression
 static void genExpr(Node *Nd) {
-  if(Nd->Kind == ND_NUM) {
-    printf("  li a0, %d\n", Nd->Val);
-    return;
+  // generate root node
+  switch(Nd->Kind) {
+    case ND_NUM:
+      printf("  li a0, %d\n", Nd->Val);
+      return;
+    // minus
+    case ND_NEG:
+      genExpr(Nd->LHS);
+      printf("  neg a0, a0\n");\
+      return;
+    default:
+      break;
   }
+  
 
   genExpr(Nd->RHS);
   push();
@@ -290,6 +416,22 @@ static void genExpr(Node *Nd) {
     return;
   case ND_DIV:
     printf(" div a0, a0, a1\n");
+    return;
+  case ND_EQ:
+  case ND_NE:
+    printf(" xor a0, a0, a1\n");
+
+    if(Nd->Kind == ND_EQ)
+      printf(" seqz a0, a0\n");
+    else
+      printf(" snez a0, a0\n");
+    return;
+  case ND_LT:
+    printf(" slt a0, a0, a1\n");
+    return;
+  case ND_LE:
+    printf(" slt a0, a1, a0\n");
+    printf(" xori a0, a0, 1\n");
     return;
   default:
     break;

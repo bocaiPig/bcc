@@ -1,3 +1,3 @@
 #chibicc
 
-#bocaicc
+#bocai's c language compiler -> bcc
